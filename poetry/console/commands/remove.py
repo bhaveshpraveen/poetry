@@ -34,25 +34,58 @@ list of installed packages
         original_content = self.poetry.file.read()
         content = self.poetry.file.read()
         poetry_content = content["tool"]["poetry"]
-        section = "dependencies"
-        if is_dev:
-            section = "dev-dependencies"
+        dev_dep = {key: val for key, val in poetry_content["dev-dependencies"].items()}
+        main_dep = {key: val for key, val in poetry_content["dependencies"].items()}
 
-        # Deleting entries
-        requirements = {}
+        dev_dep_to_remove = {}
+        main_dep_to_remove = {}
+
+        # dev-dependencies section
         for name in packages:
-            found = False
-            for key in poetry_content[section]:
+            for key in dev_dep:
                 if key.lower() == name.lower():
-                    found = True
-                    requirements[key] = poetry_content[section][key]
-                    break
+                    dev_dep_to_remove[key] = dev_dep[key]
 
-            if not found:
-                raise ValueError("Package {} not found".format(name))
+        # dependencies section
+        if not is_dev:
+            for name in packages:
+                for key in main_dep:
+                    # present in both dev and main dependency
+                    if key.lower() == name.lower() and dev_dep_to_remove.get(key):
+                        question = self.create_question(
+                            "Package {} present in both dependencies and dev-dependencies."
+                            "Please specify the section to remove the package from ".format(
+                                name
+                            ),
+                            type="choice",
+                            choices=["dev-dependencies", "dependencies", "both"],
+                        )
+                        section = self.ask(question)
+                        if section == "dependencies":
+                            del dev_dep_to_remove[key]
+                            main_dep_to_remove[key] = main_dep[key]
+                        if section == "both":
+                            main_dep_to_remove[key] = main_dep[key]
 
-        for key in requirements:
-            del poetry_content[section][key]
+                    elif key.lower() == name.lower():
+                        main_dep_to_remove[key] = main_dep[key]
+
+        # check if any of the packages were not found
+        for name in packages:
+            all_deps = list(dev_dep_to_remove) + list(main_dep_to_remove)
+            if name.lower() not in [dep.lower() for dep in all_deps]:
+                self.line_error("Package {} not found".format(name))
+                return
+
+        # delete from pyproject.toml file
+        for key in dev_dep_to_remove:
+            del poetry_content["dev-dependencies"][key]
+        for key in main_dep_to_remove:
+            del poetry_content["dependencies"][key]
+
+        # todo: if a package is in both the sections, which version to use?
+        requirements = dev_dep.copy()
+        requirements.update(main_dep_to_remove)
 
         # Write the new content back
         self.poetry.file.write(content)
